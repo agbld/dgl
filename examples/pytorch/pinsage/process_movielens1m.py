@@ -47,7 +47,7 @@ if __name__ == '__main__':
                 'occupation': occupation,
                 'zip': zip_,
                 })
-    users = pd.DataFrame(users).astype('category')
+    users = pd.DataFrame(users) #.astype('category')
 
     movies = []
     with open(os.path.join(directory, 'movies.dat'), encoding='latin1') as f:
@@ -82,6 +82,7 @@ if __name__ == '__main__':
     distinct_users_in_ratings = ratings['user_id'].unique()
     distinct_movies_in_ratings = ratings['movie_id'].unique()
     users = users[users['user_id'].isin(distinct_users_in_ratings)]
+    users = users.astype('category')
     movies = movies[movies['movie_id'].isin(distinct_movies_in_ratings)]
 
     # Group the movie features into genres (a vector), year (a category), title (a string)
