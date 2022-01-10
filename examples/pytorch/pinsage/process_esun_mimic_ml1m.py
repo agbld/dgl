@@ -1,16 +1,19 @@
 #%%
 from os import sep
+import os
 from numpy import cos, int32
 import pandas as pd
 import numpy as np
-# import argparse
+import argparse
 
-# parser = argparse.ArgumentParser()
-# parser.add_argument('directory', type=str, default='./2018-12-31')
-# parser.add_argument('output_directory', type=str, default='./esun')
-# args = parser.parse_args()
-directory = './2018-12-31' # args.directory
-output_directory = './esun' # args.output_directory
+parser = argparse.ArgumentParser()
+parser.add_argument('directory', type=str, default='./2018-12-31')
+parser.add_argument('output_directory', type=str, default='./esun')
+args = parser.parse_args()
+directory = args.directory
+output_directory = args.output_directory
+if not os.path.isdir(output_directory):
+    os.mkdir(output_directory)
 
 def to_consecutive_id(series: pd.Series):
     id_list = list(series.values)

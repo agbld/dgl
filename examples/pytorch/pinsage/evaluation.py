@@ -38,9 +38,9 @@ class LatestNNRecommender(object):
             latest_item_batch = latest_items[user_batch].to(device=h_item.device)
             dist = h_item[latest_item_batch] @ h_item.t()
             # exclude items that are already interacted
-            for i, u in enumerate(user_batch.tolist()):
-                interacted_items = full_graph.successors(u, etype=self.user_to_item_etype)
-                dist[i, interacted_items] = -np.inf
+            # for i, u in enumerate(user_batch.tolist()):
+            #     interacted_items = full_graph.successors(u, etype=self.user_to_item_etype)
+            #     dist[i, interacted_items] = -np.inf
             recommended_batches.append(dist.topk(K, 1)[1])
 
         recommendations = torch.cat(recommended_batches, 0)
