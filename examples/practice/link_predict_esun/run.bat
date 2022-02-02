@@ -1,0 +1,1 @@
+python link_predict.py esun --neg-edges-ratio 2 --num-epochs 3000 --hidden-dims 32 --agg-type mean --reco-ratio 0.1

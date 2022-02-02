@@ -35,6 +35,7 @@ class EsunGraphBuilder:
         with open(os.path.join(self.__cache_path, 'config.pkl'), 'wb') as f:
             pickle.dump(self.__config, f)
         
+        #TODO: try other id assign 
         self.__to_new_id_mapping_dict = {}
         self.__to_old_id_mapping_dict = {}
         self.__num_of_active_users = 0
@@ -221,6 +222,7 @@ class EsunGraphBuilder:
         return neg_edges_df
 
     def __build_heter_graphs(self):
+        #TODO: try undirect bipartite heter graph
         pass
     
     def __build_homo_graphs(self):
@@ -233,9 +235,7 @@ class EsunGraphBuilder:
             self.__pos_g_test = g_list[2]
             self.__neg_g_train = g_list[3]
             self.__neg_g_test = g_list[4]
-        else:
-            #TODO: try undirect bipartite heter graph
-            
+        else:            
             # build edge set for positive graphs
             pos_u = self.interactions_df['user_id'].to_list()
             pos_v = self.interactions_df['item_id'].to_list()
@@ -349,8 +349,8 @@ class EsunGraphBuilder:
                         else:  # assign item node features
                             try:
                                 feat = self.product_df[self.product_df['item_id'] == node_id].values[0][:-1]
-                                # feat = torch.cat((torch.zeros(customer_feat_size), torch.tensor(feat))) #TODO: why other better?
-                                feat = torch.cat((torch.tensor(feat), torch.zeros(customer_feat_size)))
+                                # feat = torch.cat((torch.zeros(customer_feat_size), torch.tensor(feat))) 
+                                feat = torch.cat((torch.tensor(feat), torch.zeros(customer_feat_size))) #TODO: why other better?
                             except:
                                 feat = torch.zeros(customer_feat_size + product_feat_size)
                         feat_list.append(feat)
