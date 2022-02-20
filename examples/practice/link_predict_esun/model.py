@@ -94,10 +94,10 @@ class Evaluation:
 
     def results(self):
         p = 0
-        count = len(self.pred)
+        count = len(self.ans)
         for u, pred in tqdm(self.pred.items(), total=count):
             p += self.precision_at_5(u, pred)
-        return p/count         
+        return p/count
     
     def precision_at_5(self, user, pred):
         try:

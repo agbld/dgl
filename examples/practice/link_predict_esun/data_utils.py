@@ -9,18 +9,13 @@ import torch
 from tqdm import tqdm
 
 class EsunGraphBuilder:
-    def __init__(self, path: str, drop_edges_by = 0, g_type = 'homo', neg_edges_ratio = 1, use_cache = True):
-        """init
-
-        Args:
-            path (str, optional): folder path of esun .csv files. Defaults to './esun'.
-            drop (int, optional): drop ratio, higher for faster experiment. Defaults to 0.
-        """
+    def __init__(self, path: str, drop_edges_by = 0, g_type = 'homo', neg_edges_ratio = 1, use_cache = True, id_assign_method = 'interaction'):
         self.__path = path
         self.__drop_edges_by = drop_edges_by
         self.__g_type = g_type
         self.__neg_edges_ratio = neg_edges_ratio
-        self.__config = {'path': path, 'drop_edges_by': drop_edges_by, 'g_type': g_type, 'neg_edges_ratio': neg_edges_ratio}
+        self.__id_assign_method = id_assign_method # 'feature', 'interaction' or 'both'
+        self.__config = {'path': path, 'drop_edges_by': drop_edges_by, 'g_type': g_type, 'neg_edges_ratio': neg_edges_ratio, 'id_assign_method': id_assign_method}
         self.__use_cache = use_cache
         
         self.__cache_path = os.path.join(path, '.esungbuilder')
@@ -29,25 +24,25 @@ class EsunGraphBuilder:
         else:
             with open(os.path.join(self.__cache_path, 'config.pkl'), 'rb') as f:
                 config = pickle.load(f)
-            if config != self.__config:
+            if config != self.__config: # if config is different, rebuild the graph
                 self.__use_cache = False
             
         with open(os.path.join(self.__cache_path, 'config.pkl'), 'wb') as f:
             pickle.dump(self.__config, f)
         
-        #TODO: try other id assign 
+        self.__interactions_df = pd.DataFrame()
+        self.__customer_df = pd.DataFrame()
+        self.__product_df = pd.DataFrame()
+        self.interactions_df
+        self.customer_df
+        self.product_df
+        
         self.__to_new_id_mapping_dict = {}
         self.__to_old_id_mapping_dict = {}
         self.__num_of_active_users = 0
         self.__num_of_active_items = 0
-        self.__num_nodes = 0 #self.__customer_df.shape[0] + self.__product_df.shape[0]
-        self.__interactions_df = pd.DataFrame()
-        self.interactions_df
-        
-        self.__customer_df = pd.DataFrame()
-        self.__product_df = pd.DataFrame()
-        self.customer_df
-        self.product_df
+        self.__num_nodes = 0
+        self.__build_consecutive_id()
         
         self.__pos_g = None
         self.__pos_g_train = None
@@ -78,10 +73,10 @@ class EsunGraphBuilder:
         if self.__interactions_df.empty:
             # read transactions csv, concat
             transactions_train_df = pd.read_csv(os.path.join(self.__path, 'interaction_train.csv'))
-            interactions_train_df = transactions_train_df.groupby(['cust_no', 'wm_prod_code']).first()['txn_amt'].reset_index()
+            interactions_train_df = transactions_train_df.groupby(['cust_no', 'wm_prod_code']).first().reset_index()
             interactions_train_df['eval_mask'] = False
             transactions_eval_df = pd.read_csv(os.path.join(self.__path, 'interaction_eval.csv'))
-            interactions_eval_df = transactions_eval_df.groupby(['cust_no', 'wm_prod_code']).first()['txn_amt'].reset_index()
+            interactions_eval_df = transactions_eval_df.groupby(['cust_no', 'wm_prod_code']).first().reset_index()
             interactions_eval_df['eval_mask'] = True
             interaction_df = pd.concat([interactions_train_df, interactions_eval_df])
 
@@ -94,21 +89,11 @@ class EsunGraphBuilder:
             else:
                 interaction_df = interaction_df
             
-            # to consecutive id (reserve most feature)
-            # interaction_df['user_id'] = interaction_df['cust_no'].map(self.to_new_id_mapping_dict)
-            # interaction_df['item_id'] = interaction_df['wm_prod_code'].map(self.to_new_id_mapping_dict)
-            
             # to consecutive id (reserve most interactions)
-            interaction_df['user_id'], cust_no_to_user_id = self.__to_consecutive_id(interaction_df['cust_no'])
-            self.__num_of_active_users = len(cust_no_to_user_id)
-            interaction_df['item_id'], wm_prod_code_to_item_id = self.__to_consecutive_id(interaction_df['wm_prod_code'], start_from=self.__num_of_active_users)
-            self.__to_new_id_mapping_dict.update(cust_no_to_user_id)
-            self.__to_new_id_mapping_dict.update(wm_prod_code_to_item_id)
-            self.__num_nodes = len(self.to_new_id_mapping_dict)
+            interaction_df['user_id'] = interaction_df['cust_no']
+            interaction_df['item_id'] = interaction_df['wm_prod_code']
             
-            interaction_df.drop(interaction_df.columns.difference(['user_id', 'item_id', 'eval_mask']), axis=1, inplace=True)
-            
-            # interaction_df.dropna(inplace=True)
+            interaction_df.drop(interaction_df.columns.difference(['user_id', 'item_id', 'eval_mask', 'txn_dt']), axis=1, inplace=True)
 
             self.__interactions_df = interaction_df
         
@@ -119,20 +104,15 @@ class EsunGraphBuilder:
         return self.__num_of_active_users
 
     @property
+    def num_of_active_items(self):
+        return self.__num_of_active_items
+
+    @property
     def num_nodes(self):
         return self.__num_nodes
     
     @property
     def customer_df(self) -> pd.DataFrame:
-        """load customer 1-hot features dataframe
-
-        Args:
-            path (str): folder path of esun .csv files
-            drop_redundent (bool, optional): whether drop the users that never appear in the interaction table.
-
-        Returns:
-            pd.DataFrame: each row = [user_id, feat1, feat2, ...]
-        """
         if self.__customer_df.empty:
             customer_df = pd.read_csv(os.path.join(self.__path, 'customer.csv'))
             customer_df.drop(customer_df.columns.difference(['cust_no', 'gender_code', 'age', 'income_range_code', 'risk_type_code']), axis=1, inplace=True)
@@ -151,9 +131,7 @@ class EsunGraphBuilder:
             customer_df = self.__cat_to_one_hot(customer_df, 'income_range_code')
             customer_df = self.__cat_to_one_hot(customer_df, 'risk_type_code')
 
-            # customer_df['user_id'], cust_no_to_user_id = self.__to_consecutive_id(customer_df['cust_no'])
-            # self.__to_new_id_mapping_dict.update(cust_no_to_user_id)
-            customer_df['user_id'] = customer_df['cust_no'].map(self.to_new_id_mapping_dict)
+            customer_df['user_id'] = customer_df['cust_no']
             customer_df.drop('cust_no', axis=1, inplace=True)
             
             self.__customer_df = customer_df
@@ -173,20 +151,68 @@ class EsunGraphBuilder:
             product_df = self.__cat_to_one_hot(product_df, 'prod_ccy')
             product_df = self.__cat_to_one_hot(product_df, 'prod_risk_code')
             product_df = self.__cat_to_one_hot(product_df, 'can_rcmd_ind')
-
-            # product_df['item_id'], wm_prod_code_to_item_id = self.__to_consecutive_id(product_df['wm_prod_code'], start_from=self.customer_df.shape[0])
-            # self.to_new_id_mapping_dict.update(wm_prod_code_to_item_id)
-            product_df['item_id'] = product_df['wm_prod_code'].map(self.to_new_id_mapping_dict)
+            
+            product_df['item_id'] = product_df['wm_prod_code']
             product_df.drop('wm_prod_code', axis=1, inplace=True)
             
             self.__product_df = product_df
             
         return self.__product_df
     
+    def __build_consecutive_id(self):
+        if self.interactions_df.empty or self.customer_df.empty or self.product_df.empty:
+            self.interactions_df
+            self.customer_df
+            self.product_df
+        
+        if self.__id_assign_method == 'feature':
+            self.__customer_df['user_id'], cust_no_to_user_id = self.__to_consecutive_id(self.customer_df['user_id'])
+            if self.__g_type == 'homo':
+                first_item_id = cust_no_to_user_id.shape[0]
+            if self.__g_type == 'heter':
+                first_item_id = 0
+            self.__product_df['item_id'], prod_code_to_item_id = self.__to_consecutive_id(self.product_df['item_id'], start_from=first_item_id)
+            
+            self.__interactions_df['user_id'] = self.__interactions_df['user_id'].map(cust_no_to_user_id)
+            self.__interactions_df['item_id'] = self.__interactions_df['item_id'].map(prod_code_to_item_id)
+            self.__interactions_df.dropna(inplace=True)
+            
+        elif self.__id_assign_method == 'interaction':
+            self.__interactions_df['user_id'], cust_no_to_user_id = self.__to_consecutive_id(self.interactions_df['user_id'])
+            if self.__g_type == 'homo':
+                first_item_id = len(cust_no_to_user_id)
+            if self.__g_type == 'heter':
+                first_item_id = 0
+            self.__interactions_df['item_id'], prod_code_to_item_id = self.__to_consecutive_id(self.interactions_df['item_id'], start_from=first_item_id)
+            
+            self.__customer_df['user_id'] = self.__customer_df['user_id'].map(cust_no_to_user_id)
+            self.__product_df['item_id'] = self.__product_df['item_id'].map(prod_code_to_item_id)
+            
+        else: # self.__id_assign_method == 'both'
+            all_cust_no = pd.concat([self.__interactions_df['user_id'], self.__customer_df['user_id']], ignore_index=True)
+            all_prod_code = pd.concat([self.__interactions_df['item_id'], self.__product_df['item_id']], ignore_index=True)
+            all_cust_no, cust_no_to_user_id = self.__to_consecutive_id(all_cust_no)
+            if self.__g_type == 'homo':
+                first_item_id = cust_no_to_user_id.shape[0]
+            if self.__g_type == 'heter':
+                first_item_id = 0
+            all_prod_code, prod_code_to_item_id = self.__to_consecutive_id(all_prod_code, start_from=first_item_id)
+            
+            self.__interactions_df['user_id'] = self.__interactions_df['user_id'].map(cust_no_to_user_id)
+            self.__interactions_df['item_id'] = self.__interactions_df['item_id'].map(prod_code_to_item_id)
+            self.__customer_df['user_id'] = self.__customer_df['user_id'].map(cust_no_to_user_id)
+            self.__product_df['item_id'] = self.__product_df['item_id'].map(prod_code_to_item_id)
+        
+        self.__num_of_active_users = len(cust_no_to_user_id)
+        self.__num_of_active_items = len(prod_code_to_item_id)
+        self.__num_nodes = self.__num_of_active_users + self.__num_of_active_items
+        self.__to_new_id_mapping_dict.update(cust_no_to_user_id)
+        self.__to_new_id_mapping_dict.update(prod_code_to_item_id)
+    
     @property
     def to_new_id_mapping_dict(self) -> dict:
         if self.__to_new_id_mapping_dict == {}:
-            self.interactions_df
+            self.__build_consecutive_id()
         
         return self.__to_new_id_mapping_dict
 
@@ -195,7 +221,7 @@ class EsunGraphBuilder:
         if self.__to_old_id_mapping_dict == {}:
             self.__to_old_id_mapping_dict = dict((v,k) for k,v in self.to_new_id_mapping_dict.items())
         
-        return self.__to_old_id_mapping_dict      
+        return self.__to_old_id_mapping_dict
 
     def __get_k_negative_edges_from_g(self, g: dgl.DGLHeteroGraph, k = 1):
         u_list, v_list = g.edges()
@@ -222,10 +248,116 @@ class EsunGraphBuilder:
         return neg_edges_df
 
     def __build_heter_graphs(self):
-        #TODO: try undirect bipartite heter graph
-        pass
+        g_list_path = os.path.join(self.__cache_path, 'graphs.dgl')
+        
+        # build edge set for positive graphs
+        interaction_df_distinct = self.interactions_df.groupby(['user_id', 'item_id']).first().reset_index()
+        pos_u = self.interactions_df['user_id'].to_list()
+        pos_v = self.interactions_df['item_id'].to_list()
+        
+        pos_u_train = self.interactions_df[~self.interactions_df['eval_mask']]['user_id'].to_list()
+        pos_v_train = self.interactions_df[~self.interactions_df['eval_mask']]['item_id'].to_list()
+        pos_u_test = self.interactions_df[self.interactions_df['eval_mask']]['user_id'].to_list()
+        pos_v_test = self.interactions_df[self.interactions_df['eval_mask']]['item_id'].to_list()
+        
+        # build positive graph
+        num_node = {
+            'u': self.num_of_active_users,
+            'v': self.num_of_active_items,
+        }
+        
+        graph_data = {
+            ('u', '->', 'v'): (pos_u, pos_v),
+            ('v', '<-', 'u'): (pos_v, pos_u),
+        }
+        pos_g = dgl.heterograph(graph_data, num_nodes_dict=num_node)
+        # pos_g = dgl.bipartite((pos_u, pos_v), num_nodes=self.num_nodes)
+        # pos_g = dgl.to_simple(pos_g)
+        
+        graph_data = {
+            ('u', '->', 'v'): (pos_u_train, pos_v_train),
+            ('v', '<-', 'u'): (pos_v_train, pos_u_train),
+        }
+        pos_g_train = dgl.heterograph(graph_data, num_nodes_dict=num_node)
+        # pos_g_train = dgl.bipartite((pos_u_train, pos_v_train), num_nodes=self.num_nodes)
+        
+        graph_data = {
+            ('u', '->', 'v'): (pos_u_test, pos_v_test),
+            ('v', '<-', 'u'): (pos_v_test, pos_u_test),
+        }
+        pos_g_test = dgl.heterograph(graph_data, num_nodes_dict=num_node)
+        # pos_g_test = dgl.bipartite((pos_u_test, pos_v_test), num_nodes=self.num_nodes)
+        
+        num_edges = pos_g.num_edges('->') + pos_g.num_edges('<-')
+        num_edges_test = pos_g_test.num_edges('->') + pos_g_test.num_edges('<-')
+        # find all negative edges and split them for trainnig and testing (direct)
+        neg_edges = self.__get_k_negative_edges_from_g(pos_g, int(num_edges * self.__neg_edges_ratio))
+        neg_u_train = neg_edges['u'].to_list()[num_edges_test:]
+        neg_v_train = neg_edges['v'].to_list()[num_edges_test:]
+        neg_u_test = neg_edges['u'].to_list()[:num_edges_test]
+        neg_v_test = neg_edges['v'].to_list()[:num_edges_test]
+        
+        graph_data = {
+            ('u', '->', 'v'): (neg_u_train, neg_v_train),
+        }
+        neg_g_train = dgl.heterograph(graph_data, num_nodes_dict=num_node)
+        
+        graph_data = {
+            ('u', '->', 'v'): (neg_u_test, neg_v_test),
+        }
+        neg_g_test = dgl.heterograph(graph_data, num_nodes_dict=num_node)
+        # neg_g_train = dgl.bipartite((neg_u_train, neg_v_train), num_nodes=self.num_nodes)
+        # neg_g_test = dgl.bipartite((neg_u_test, neg_v_test), num_nodes=self.num_nodes)
+        
+        self.__pos_g = pos_g
+        self.__pos_g_train = pos_g_train
+        self.__pos_g_test = pos_g_test
+        self.__neg_g_train = neg_g_train
+        self.__neg_g_test = neg_g_test
+
+        dgl.save_graphs(g_list_path, [pos_g, pos_g_train, pos_g_test, neg_g_train, neg_g_test])
     
     def __build_homo_graphs(self):
+        g_list_path = os.path.join(self.__cache_path, 'graphs.dgl')
+        
+        # build edge set for positive graphs
+        pos_u = self.interactions_df['user_id'].to_list()
+        pos_v = self.interactions_df['item_id'].to_list()
+        pos_u_train = self.interactions_df[~self.interactions_df['eval_mask']]['user_id'].to_list()
+        pos_v_train = self.interactions_df[~self.interactions_df['eval_mask']]['item_id'].to_list()
+        pos_u_test = self.interactions_df[self.interactions_df['eval_mask']]['user_id'].to_list()
+        pos_v_test = self.interactions_df[self.interactions_df['eval_mask']]['item_id'].to_list()
+        
+        # build positive graph
+        pos_g = dgl.graph((pos_u, pos_v), num_nodes=self.num_nodes)
+        pos_g = dgl.to_simple(pos_g)
+        pos_g = dgl.to_bidirected(pos_g)
+        
+        pos_g_train = dgl.graph((pos_u_train, pos_v_train), num_nodes=self.num_nodes)
+        pos_g_train = dgl.to_bidirected(pos_g_train)
+        
+        pos_g_test = dgl.graph((pos_u_test, pos_v_test), num_nodes=self.num_nodes)
+        pos_g_test = dgl.to_bidirected(pos_g_test)
+        
+        # find all negative edges and split them for trainnig and testing (direct)
+        neg_edges = self.__get_k_negative_edges_from_g(pos_g, int(pos_g.num_edges() * self.__neg_edges_ratio))
+        neg_u_train = neg_edges['u'].to_list()[pos_g_test.num_edges():]
+        neg_v_train = neg_edges['v'].to_list()[pos_g_test.num_edges():]
+        neg_u_test = neg_edges['u'].to_list()[:pos_g_test.num_edges()]
+        neg_v_test = neg_edges['v'].to_list()[:pos_g_test.num_edges()]
+        
+        neg_g_train = dgl.graph((neg_u_train, neg_v_train), num_nodes=self.num_nodes)
+        neg_g_test = dgl.graph((neg_u_test, neg_v_test), num_nodes=self.num_nodes)
+        
+        self.__pos_g = pos_g
+        self.__pos_g_train = pos_g_train
+        self.__pos_g_test = pos_g_test
+        self.__neg_g_train = neg_g_train
+        self.__neg_g_test = neg_g_test
+
+        dgl.save_graphs(g_list_path, [pos_g, pos_g_train, pos_g_test, neg_g_train, neg_g_test])
+    
+    def build_graphs(self):
         g_list_path = os.path.join(self.__cache_path, 'graphs.dgl')
         
         if self.__use_cache and os.path.exists(g_list_path):
@@ -236,67 +368,12 @@ class EsunGraphBuilder:
             self.__neg_g_train = g_list[3]
             self.__neg_g_test = g_list[4]
         else:            
-            # build edge set for positive graphs
-            pos_u = self.interactions_df['user_id'].to_list()
-            pos_v = self.interactions_df['item_id'].to_list()
-            pos_u_train = self.interactions_df[~self.interactions_df['eval_mask']]['user_id'].to_list()
-            pos_v_train = self.interactions_df[~self.interactions_df['eval_mask']]['item_id'].to_list()
-            pos_u_test = self.interactions_df[self.interactions_df['eval_mask']]['user_id'].to_list()
-            pos_v_test = self.interactions_df[self.interactions_df['eval_mask']]['item_id'].to_list()
-            
-            # build positive graph
-            pos_g = dgl.graph((pos_u, pos_v), num_nodes=self.num_nodes)
-            pos_g = dgl.to_simple(pos_g)
-            pos_g = dgl.to_bidirected(pos_g)
-            
-            pos_g_train = dgl.graph((pos_u_train, pos_v_train), num_nodes=self.__num_nodes)
-            pos_g_train = dgl.to_bidirected(pos_g_train)
-            
-            pos_g_test = dgl.graph((pos_u_test, pos_v_test), num_nodes=self.__num_nodes)
-            pos_g_test = dgl.to_bidirected(pos_g_test)
-            
-            # find all negative edges and split them for trainnig and testing (undirect)
-            # neg_edges = self.__get_k_negative_edges_from_g(pos_g, pos_g.num_edges() // 2)
-            # neg_u_train = neg_edges['u'].to_list()[pos_g_test.num_edges():]
-            # neg_v_train = neg_edges['v'].to_list()[pos_g_test.num_edges():]
-            # neg_u_test = neg_edges['u'].to_list()[:pos_g_test.num_edges()]
-            # neg_v_test = neg_edges['v'].to_list()[:pos_g_test.num_edges()]
-            
-            # neg_g_train = dgl.graph((neg_u_train, neg_v_train), num_nodes=self.__num_nodes)
-            # neg_g_train = dgl.to_bidirected(neg_g_train)
-            # neg_g_test = dgl.graph((neg_u_test, neg_v_test), num_nodes=self.__num_nodes)
-            # neg_g_test = dgl.to_bidirected(neg_g_test)
-            
-            # find all negative edges and split them for trainnig and testing (direct)
-            neg_edges = self.__get_k_negative_edges_from_g(pos_g, int(pos_g.num_edges() * self.__neg_edges_ratio))
-            neg_u_train = neg_edges['u'].to_list()[pos_g_test.num_edges():]
-            neg_v_train = neg_edges['v'].to_list()[pos_g_test.num_edges():]
-            neg_u_test = neg_edges['u'].to_list()[:pos_g_test.num_edges()]
-            neg_v_test = neg_edges['v'].to_list()[:pos_g_test.num_edges()]
-            
-            neg_g_train = dgl.graph((neg_u_train, neg_v_train), num_nodes=self.__num_nodes)
-            # neg_g_train = dgl.to_bidirected(neg_g_train)
-            neg_g_test = dgl.graph((neg_u_test, neg_v_test), num_nodes=self.__num_nodes)
-            # neg_g_test = dgl.to_bidirected(neg_g_test)
-            
-
-            self.__pos_g = pos_g
-            self.__pos_g_train = pos_g_train
-            self.__pos_g_test = pos_g_test
-            self.__neg_g_train = neg_g_train
-            self.__neg_g_test = neg_g_test
-
-            dgl.save_graphs(g_list_path, [pos_g, pos_g_train, pos_g_test, neg_g_train, neg_g_test])
-    
-    def build_graphs(self):
-        if self.__g_type == 'homo':
-            self.__build_homo_graphs()
-        elif self.__g_type == 'heter':
-            self.__build_heter_graphs()
+            if self.__g_type == 'homo':
+                self.__build_homo_graphs()
+            elif self.__g_type == 'heter':
+                self.__build_heter_graphs()
             
         self.node_features
-        # self.pos_g.ndata['feat'] = self.node_features
-        # self.pos_g_train.ndata['feat'] = self.node_features
     
     @property
     def pos_g(self) -> dgl.DGLHeteroGraph:
@@ -327,6 +404,10 @@ class EsunGraphBuilder:
         if self.__neg_g_test == None:
             self.build_graphs()
         return self.__neg_g_test
+    
+    def __build_random_feature(self):
+        
+        pass
     
     def __build_homo_nodes_feature(self):
         if self.__node_features == None:
@@ -359,7 +440,23 @@ class EsunGraphBuilder:
                 
                 torch.save(feat_list, node_features_path)
                 self.__node_features = feat_list
-        
+    
+    def __build_heter_nodes_feature(self):
+        return
+        if self.__node_features == None:
+            node_features_path = os.path.join(self.__cache_path, 'node_feat.pt')
+            if self.__use_cache and os.path.exists(node_features_path):
+                self.__node_features = torch.load(node_features_path)
+            else:
+                # assign feature to pos graph
+                feat_list = []
+                with tqdm(total=self.num_nodes(), desc='Assign user feature : ') as pbar:
+                    for node_id in range(self.__pos_g.num_nodes()):
+                        customer_feat_size = len(self.customer_df.columns) - 1
+                        product_feat_size = len(self.product_df.columns) - 1
+                        if node_id < self.__num_of_active_users:
+                            pass
+    
     @property
     def node_features(self) -> torch.Tensor:
         if self.__node_features == None:
@@ -369,6 +466,8 @@ class EsunGraphBuilder:
             else:
                 if self.__g_type == 'homo':
                     self.__build_homo_nodes_feature()
+                elif self.__g_type == 'heter':
+                    self.__build_heter_nodes_feature()
         
         return self.__node_features
         

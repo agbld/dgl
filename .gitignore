@@ -1,6 +1,9 @@
 *.csv
 *.dat
 *.pkl
+*.pt
+*.dgl
+wandb
 
 # IDE
 .idea
